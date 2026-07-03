@@ -1,33 +1,36 @@
 import axios from "axios";
 import fs from "fs";
+import path from "path";
 import Groq from "groq-sdk";
 
-// Load knowledge base
-import path from "path";
-
+// =========================
+// LOAD KNOWLEDGE BASE
+// =========================
 const knowledge = fs.readFileSync(
   path.join(process.cwd(), "knowledge.txt"),
   "utf-8"
 );
 
-// Groq setup
+// =========================
+// GROQ SETUP
+// =========================
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
+// =========================
+// HANDLER
+// =========================
 export default async function handler(req, res) {
   // =========================
-  // META VERIFICATION
+  // FACEBOOK VERIFY
   // =========================
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    if (
-      mode === "subscribe" &&
-      token === process.env.VERIFY_TOKEN
-    ) {
+    if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
       return res.status(200).send(challenge);
     }
 
@@ -35,7 +38,7 @@ export default async function handler(req, res) {
   }
 
   // =========================
-  // MESSAGES HANDLER
+  // MESSAGES
   // =========================
   if (req.method === "POST") {
     try {
@@ -52,7 +55,43 @@ export default async function handler(req, res) {
       }
 
       // =========================
-      // AI RESPONSE (BR ZIMMER)
+      // HUMAN HANDOFF CHECK (FAST EXIT)
+      // =========================
+      const handoffKeywords = [
+        "human",
+        "owner",
+        "real person",
+        "call me",
+        "connect me",
+        "talk to someone",
+        "staff"
+      ];
+
+      const isHandoff = handoffKeywords.some(word =>
+        messageText.toLowerCase().includes(word)
+      );
+
+      if (isHandoff) {
+        await axios.post(
+          "https://graph.facebook.com/v19.0/me/messages",
+          {
+            recipient: { id: senderId },
+            message: {
+              text: "Got it 👍 Connecting you to the owner now. Please wait a moment."
+            }
+          },
+          {
+            params: {
+              access_token: process.env.PAGE_ACCESS_TOKEN
+            }
+          }
+        );
+
+        return res.status(200).send("EVENT_RECEIVED");
+      }
+
+      // =========================
+      // AI RESPONSE
       // =========================
       const completion = await groq.chat.completions.create({
         model: "llama-3.1-8b-instant",
@@ -62,19 +101,29 @@ export default async function handler(req, res) {
             content: `
 You are the official booking assistant for BR Zimmer (beach transient house in Bagasbas, Philippines).
 
-Use this knowledge base:
-
+KNOWLEDGE BASE:
 ${knowledge}
 
-RULES:
-- If asked for price → ALWAYS say: "Please message the owner for pricing and discounts."
-- Be friendly, short, and helpful
-- Always encourage booking via Airbnb or direct page
-- Check-in: 2:00 PM
-- Check-out: 11:00 AM
-- If long stay → suggest possible discount (do NOT give exact price)
-- Be accurate based on knowledge base only
-            `
+STYLE RULES:
+- Keep replies VERY short (max 1–2 sentences)
+- No long explanations
+- No paragraphs
+- Chat-like tone (Messenger style)
+
+BUSINESS RULES:
+- If asked for price or rates → "Please message the owner for pricing and discounts."
+- Do not invent prices
+- If asked availability → ask for exact dates
+- Check-in: 2:00 PM | Check-out: 11:00 AM
+- Encourage booking via Airbnb or page
+
+HUMAN HANDOFF RULE:
+If user requests human/owner/staff:
+STOP everything and do not continue conversation.
+
+GOAL:
+Help users book quickly and efficiently.
+`
           },
           {
             role: "user",
@@ -86,7 +135,7 @@ RULES:
       const reply = completion.choices[0].message.content;
 
       // =========================
-      // SEND BACK TO FACEBOOK
+      // SEND TO FACEBOOK
       // =========================
       await axios.post(
         "https://graph.facebook.com/v19.0/me/messages",
