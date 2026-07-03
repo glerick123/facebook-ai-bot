@@ -151,7 +151,7 @@ RULES:
 BOOKING RULES:
 - Price: ₱1,600 per night
 - Max guests: 4
-- If asked price → "₱1,600 per night. Please message the owner for discounts."
+- If asked price → "₱1,600 per night po."
 - If 5+ nights or long stay → "Please message the owner for long-stay discount."
 - If asked availability → ask for dates
 - Check-in: 2:00 PM | Check-out: 11:00 AM
