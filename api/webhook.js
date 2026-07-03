@@ -4,6 +4,11 @@ import path from "path";
 import Groq from "groq-sdk";
 
 // =========================
+// MEMORY (HUMAN/BOT MODE)
+// =========================
+const userMode = new Map();
+
+// =========================
 // LOAD KNOWLEDGE BASE
 // =========================
 const knowledge = fs.readFileSync(
@@ -18,12 +23,9 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-// =========================
-// HANDLER
-// =========================
 export default async function handler(req, res) {
   // =========================
-  // FACEBOOK VERIFY
+  // FACEBOOK VERIFICATION
   // =========================
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
@@ -54,8 +56,10 @@ export default async function handler(req, res) {
         return res.status(200).send("OK");
       }
 
+      const text = messageText.toLowerCase();
+
       // =========================
-      // HUMAN HANDOFF CHECK (FAST EXIT)
+      // HUMAN HANDOFF (LOCK BOT)
       // =========================
       const handoffKeywords = [
         "human",
@@ -67,11 +71,11 @@ export default async function handler(req, res) {
         "staff"
       ];
 
-      const isHandoff = handoffKeywords.some(word =>
-        messageText.toLowerCase().includes(word)
-      );
+      const isHandoff = handoffKeywords.some(w => text.includes(w));
 
       if (isHandoff) {
+        userMode.set(senderId, "HUMAN");
+
         await axios.post(
           "https://graph.facebook.com/v19.0/me/messages",
           {
@@ -91,7 +95,37 @@ export default async function handler(req, res) {
       }
 
       // =========================
-      // AI RESPONSE
+      // BLOCK BOT IF IN HUMAN MODE
+      // =========================
+      if (userMode.get(senderId) === "HUMAN") {
+        const resetKeywords = ["bot", "assistant", "continue"];
+
+        const reset = resetKeywords.some(w => text.includes(w));
+
+        if (!reset) {
+          await axios.post(
+            "https://graph.facebook.com/v19.0/me/messages",
+            {
+              recipient: { id: senderId },
+              message: {
+                text: "You are now connected to the owner. Please wait or type 'bot' to continue chatting here."
+              }
+            },
+            {
+              params: {
+                access_token: process.env.PAGE_ACCESS_TOKEN
+              }
+            }
+          );
+
+          return res.status(200).send("EVENT_RECEIVED");
+        } else {
+          userMode.set(senderId, "BOT");
+        }
+      }
+
+      // =========================
+      // AI RESPONSE (BR ZIMMER)
       // =========================
       const completion = await groq.chat.completions.create({
         model: "llama-3.1-8b-instant",
@@ -99,46 +133,23 @@ export default async function handler(req, res) {
           {
             role: "system",
             content: `
-You are the official booking assistant for BR Zimmer (beach transient house in Bagasbas, Philippines).
+You are the official booking assistant for BR Zimmer (Bagasbas Beach, Philippines).
 
-KNOWLEDGE BASE:
+KNOWLEDGE:
 ${knowledge}
 
-STYLE RULES:
-- Keep replies VERY short (max 1–2 sentences)
-- No long explanations
-- No paragraphs
-- Chat-like tone (Messenger style)
+STYLE:
+- Very short replies (1–2 sentences)
+- Friendly and direct
+- Messenger style chat
 
-BUSINESS RULES:
-- If asked for price or rates → "Please message the owner for pricing and discounts."
-- Do not invent prices
-- If asked availability → ask for exact dates
-- Check-in: 2:00 PM | Check-out: 11:00 AM
-- Encourage booking via Airbnb or page
-
-HUMAN HANDOFF RULE:
-If user requests human/owner/staff:
-STOP everything and do not continue conversation.
-
-PRICING & BOOKING RULES:
-
-- Standard rate: ₱1,600 per night
-- Maximum guests: 4 people
-
-IMPORTANT PRICING BEHAVIOR:
-- If user asks "how much", "price", "rate", "per night":
-  → Reply ONLY: "₱1,600 per night. Please message the owner for discounts and final confirmation."
-
-- If user mentions LONG STAY (5 nights or more, or words like "week", "long stay", "vacation stay"):
-  → DO NOT give price
-  → Reply ONLY: "Got it 👍 For long stays, please message the owner so we can arrange a discount for you."
-
-- Never calculate total cost for long stays
-- Never negotiate price
-
-GOAL:
-Help users book quickly and efficiently.
+RULES:
+- Price: ₱1,600 per night
+- Max guests: 4
+- If asked price → "₱1,600 per night. Please message the owner for discounts."
+- If 5+ nights or long stay → "Please message the owner for long-stay discount."
+- If asked availability → ask for dates
+- Check-in 2PM | Check-out 11AM
 `
           },
           {
@@ -151,7 +162,7 @@ Help users book quickly and efficiently.
       const reply = completion.choices[0].message.content;
 
       // =========================
-      // SEND TO FACEBOOK
+      // SEND MESSAGE
       // =========================
       await axios.post(
         "https://graph.facebook.com/v19.0/me/messages",
@@ -167,8 +178,8 @@ Help users book quickly and efficiently.
       );
 
       return res.status(200).send("EVENT_RECEIVED");
-    } catch (error) {
-      console.error("Webhook Error:", error);
+    } catch (err) {
+      console.error("Webhook Error:", err);
       return res.status(200).send("ERROR_HANDLED");
     }
   }
