@@ -4,17 +4,22 @@ import path from "path";
 import Groq from "groq-sdk";
 
 // =========================
-// MEMORY (HUMAN/BOT MODE)
+// SIMPLE MEMORY STORE (Vercel-safe best effort)
 // =========================
 const userMode = new Map();
 
 // =========================
 // LOAD KNOWLEDGE BASE
 // =========================
-const knowledge = fs.readFileSync(
-  path.join(process.cwd(), "knowledge.txt"),
-  "utf-8"
-);
+let knowledge = "";
+try {
+  knowledge = fs.readFileSync(
+    path.join(process.cwd(), "knowledge.txt"),
+    "utf-8"
+  );
+} catch (e) {
+  knowledge = "No knowledge base found.";
+}
 
 // =========================
 // GROQ SETUP
@@ -58,9 +63,9 @@ export default async function handler(req, res) {
 
       const text = messageText.toLowerCase();
 
-      // =========================
-      // HUMAN HANDOFF (LOCK BOT)
-      // =========================
+      // =====================================================
+      // 1. HUMAN HANDOFF TRIGGER
+      // =====================================================
       const handoffKeywords = [
         "human",
         "owner",
@@ -71,7 +76,7 @@ export default async function handler(req, res) {
         "staff"
       ];
 
-      const isHandoff = handoffKeywords.some(w => text.includes(w));
+      const isHandoff = handoffKeywords.some(k => text.includes(k));
 
       if (isHandoff) {
         userMode.set(senderId, "HUMAN");
@@ -91,16 +96,16 @@ export default async function handler(req, res) {
           }
         );
 
-        return res.status(200).send("EVENT_RECEIVED");
+        return res.status(200).send("HANDOFF_OK");
       }
 
-      // =========================
-      // BLOCK BOT IF IN HUMAN MODE
-      // =========================
+      // =====================================================
+      // 2. BLOCK BOT IF USER IS IN HUMAN MODE
+      // =====================================================
       if (userMode.get(senderId) === "HUMAN") {
-        const resetKeywords = ["bot", "assistant", "continue"];
+        const resetKeywords = ["bot", "continue", "assistant"];
 
-        const reset = resetKeywords.some(w => text.includes(w));
+        const reset = resetKeywords.some(k => text.includes(k));
 
         if (!reset) {
           await axios.post(
@@ -108,7 +113,7 @@ export default async function handler(req, res) {
             {
               recipient: { id: senderId },
               message: {
-                text: "You are now connected to the owner. Please wait or type 'bot' to continue chatting here."
+                text: "You are now connected to the owner. Please wait or type 'bot' to return."
               }
             },
             {
@@ -118,38 +123,38 @@ export default async function handler(req, res) {
             }
           );
 
-          return res.status(200).send("EVENT_RECEIVED");
-        } else {
-          userMode.set(senderId, "BOT");
+          return res.status(200).send("BLOCKED_HUMAN");
         }
+
+        userMode.set(senderId, "BOT");
       }
 
-      // =========================
-      // AI RESPONSE (BR ZIMMER)
-      // =========================
+      // =====================================================
+      // 3. AI RESPONSE (ONLY IF NOT BLOCKED)
+      // =====================================================
       const completion = await groq.chat.completions.create({
         model: "llama-3.1-8b-instant",
         messages: [
           {
             role: "system",
             content: `
-You are the official booking assistant for BR Zimmer (Bagasbas Beach, Philippines).
+You are the booking assistant for BR Zimmer (Bagasbas Beach, Philippines).
 
 KNOWLEDGE:
 ${knowledge}
 
-STYLE:
-- Very short replies (1–2 sentences)
-- Friendly and direct
-- Messenger style chat
-
 RULES:
+- Keep replies VERY short (max 1–2 sentences)
+- Friendly Messenger tone
+- No long explanations
+
+BOOKING RULES:
 - Price: ₱1,600 per night
 - Max guests: 4
 - If asked price → "₱1,600 per night. Please message the owner for discounts."
 - If 5+ nights or long stay → "Please message the owner for long-stay discount."
 - If asked availability → ask for dates
-- Check-in 2PM | Check-out 11AM
+- Check-in: 2:00 PM | Check-out: 11:00 AM
 `
           },
           {
@@ -161,9 +166,9 @@ RULES:
 
       const reply = completion.choices[0].message.content;
 
-      // =========================
-      // SEND MESSAGE
-      // =========================
+      // =====================================================
+      // 4. SEND MESSAGE TO FACEBOOK
+      // =====================================================
       await axios.post(
         "https://graph.facebook.com/v19.0/me/messages",
         {
