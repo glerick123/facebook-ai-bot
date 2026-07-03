@@ -3,7 +3,12 @@ import fs from "fs";
 import Groq from "groq-sdk";
 
 // Load knowledge base
-const knowledge = fs.readFileSync("./knowledge.txt", "utf-8");
+import path from "path";
+
+const knowledge = fs.readFileSync(
+  path.join(process.cwd(), "knowledge.txt"),
+  "utf-8"
+);
 
 // Groq setup
 const groq = new Groq({
